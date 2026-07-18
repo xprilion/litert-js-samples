@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiteRT.js — Image Classification Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { 
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #0f0f0f; color: #e0e0e0;
+    display: flex; flex-direction: column; align-items: center; padding: 2rem; min-height: 100vh;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; color: #7b46f6; }
+  .subtitle { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+  .card {
+    background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px;
+    padding: 1.5rem; max-width: 520px; width: 100%;
+  }
+  .status {
+    background: #1a2a1a; border: 1px solid #2a4a2a; border-radius: 8px;
+    padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.85rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .status.error { background: #2a1a1a; border-color: #4a2a2a; color: #f87171; }
+  .status.success { background: #1a2a1a; border-color: #2a4a2a; color: #4ade80; }
+  canvas { max-width: 320px; border-radius: 8px; margin: 1rem auto; display: block; }
+  #image-input { display: none; }
+  .upload-btn {
+    display: inline-block; padding: 0.5rem 1rem; background: #7b46f6; color: white;
+    border-radius: 8px; cursor: pointer; font-size: 0.85rem; border: none;
+    margin: 0.5rem 0;
+  }
+  .upload-btn:hover { background: #6a35e5; }
+  .results { margin-top: 1rem; }
+  .result-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.4rem 0; border-bottom: 1px solid #2a2a2a;
+  }
+  .result-row:last-child { border-bottom: none; }
+  .bar {
+    height: 6px; background: #7b46f6; border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+  .label { flex: 1; font-size: 0.85rem; }
+  .confidence { font-size: 0.8rem; color: #888; margin-left: 0.5rem; }
+  #log { font-size: 0.75rem; color: #666; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+
+<h1>LiteRT.js</h1>
+<p class="subtitle">MobileNetV4 — Image Classification (WebGPU)</p>
+
+<div class="card">
+  <div id="status" class="status">Initializing…</div>
+
+  <canvas id="preview" width="224" height="224"></canvas>
+
+  <label class="upload-btn" for="image-input">📁 Upload Image</label>
+  <input type="file" id="image-input" accept="image/*">
+
+  <div class="results" id="results"></div>
+  <div id="log"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "@litertjs/core": "https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/dist/index.min.js",
+    "@litertjs/wasm-utils": "https://cdn.jsdelivr.net/npm/@litertjs/wasm-utils@2.5.0/dist/index.min.js"
+  }
+}
+</script>
+<script type="module">
+import { loadLiteRt, loadAndCompile, Tensor } from '@litertjs/core';
+
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+const logEl = document.getElementById('log');
+const preview = document.getElementById('preview');
+const ctx = preview.getContext('2d');
+
+function log(msg) {
+  logEl.textContent = msg;
+  console.log(msg);
+}
+
+function setStatus(msg, cls = '') {
+  statusEl.textContent = msg;
+  statusEl.className = 'status ' + cls;
+}
+
+// ImageNet classes (subset — the first 1000)
+const IMAGENET_CLASSES_URL = 'https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.0/dist/imagenet_classes.js';
+let classNames = [];
+
+function getClassName(index) {
+  return classNames[index] || `Class ${index}`;
+}
+
+async function loadClassNames() {
+  try {
+    // Load class names from a reliable source
+    const resp = await fetch('https://raw.githubusercontent.com/anishathalye/imagenet-simple-labels/master/imagenet-simple-labels.json');
+    const data = await resp.json();
+    classNames = data;
+    log('Loaded ImageNet class names (' + classNames.length + ' classes)');
+  } catch {
+    classNames = Array.from({length: 1000}, (_, i) => `Class ${i}`);
+    log('Failed to load class names, using fallback');
+  }
+}
+
+// Draw image to canvas and get Float32Array
+function preprocessImage(img) {
+  ctx.drawImage(img, 0, 0, 224, 224);
+  const imageData = ctx.getImageData(0, 0, 224, 224);
+  const input = new Float32Array(1 * 224 * 224 * 3);
+  
+  // Normalize: (pixel/255 - mean) / std
+  // NHWC layout: channels last [1, 224, 224, 3]
+  const mean = [0.485, 0.456, 0.406];
+  const std = [0.229, 0.224, 0.225];
+  
+  for (let y = 0; y < 224; y++) {
+    for (let x = 0; x < 224; x++) {
+      const pixelIdx = (y * 224 + x) * 4;
+      const base = y * 224 * 3 + x * 3;
+      input[base + 0] = (imageData.data[pixelIdx] / 255.0 - mean[0]) / std[0];
+      input[base + 1] = (imageData.data[pixelIdx + 1] / 255.0 - mean[1]) / std[1];
+      input[base + 2] = (imageData.data[pixelIdx + 2] / 255.0 - mean[2]) / std[2];
+    }
+  }
+  return input;
+}
+
+function softmax(arr) {
+  const max = Math.max(...arr);
+  const exp = arr.map(x => Math.exp(x - max));
+  const sum = exp.reduce((a, b) => a + b, 0);
+  return exp.map(x => x / sum);
+}
+
+function displayResults(outputData) {
+  // Apply softmax to convert logits to probabilities
+  const probs = softmax(Array.from(outputData));
+  
+  // Convert to array with indices, sort by confidence
+  const entries = probs
+    .map((val, idx) => ({ idx, val }))
+    .sort((a, b) => b.val - a.val)
+    .slice(0, 5);
+  
+  const maxVal = entries[0]?.val || 1;
+  
+  resultsEl.innerHTML = entries.map(({ idx, val }) => {
+    const width = (val / maxVal * 100).toFixed(1);
+    return `
+      <div class="result-row">
+        <span class="label">${getClassName(idx)}</span>
+        <span class="confidence">${(val * 100).toFixed(1)}%</span>
+      </div>
+      <div class="bar" style="width:${width}%"></div>
+    `;
+  }).join('');
+}
+
+async function runInference(model, inputData) {
+  const inputTensor = new Tensor(inputData, [1, 224, 224, 3]);
+  const startTime = performance.now();
+  const results = await model.run(inputTensor);
+  const elapsed = (performance.now() - startTime).toFixed(1);
+  
+  const outputData = await results[0].data();
+  inputTensor.delete();
+  results.forEach(r => r.delete());
+  
+  log(`Inference: ${elapsed}ms`);
+  displayResults(outputData);
+}
+
+let currentModel = null;
+
+// --- Init ---
+async function init() {
+  setStatus('Loading class names…');
+  await loadClassNames();
+
+  setStatus('Loading LiteRT.js WASM runtime…');
+  const wasmPath = 'https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm/';
+  await loadLiteRt(wasmPath);
+  log('WASM loaded');
+
+  setStatus('Loading model (MobileNetV4 float16, ~7.5MB)…');
+  const MODEL_URL = 'https://huggingface.co/byoussef/MobileNetV4_Conv_Small_TFLite_224/resolve/main/mobilenetv4_conv_small.e2400_r224_in1k_float16.tflite';
+  
+  let model, backend;
+  try {
+    model = await loadAndCompile(MODEL_URL, { accelerator: 'webgpu' });
+    backend = 'WebGPU';
+    log('Model loaded on WebGPU');
+  } catch (e) {
+    log(`WebGPU unavailable (${e.message}), falling back to WASM…`);
+    model = await loadAndCompile(MODEL_URL, { accelerator: 'wasm' });
+    backend = 'WASM (CPU)';
+    log('Model loaded on WASM');
+  }
+  setStatus('Ready — upload an image or use the default cat', 'success');
+  currentModel = model;
+
+  // Load default cat image and run inference
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = async () => {
+    const inputData = preprocessImage(img);
+    setStatus('Running inference…');
+    await runInference(model, inputData);
+    setStatus('Ready — upload an image or use the default cat', 'success');
+  };
+  img.src = 'cat.jpg';
+}
+
+// File upload handler
+document.getElementById('image-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file || !currentModel) return;
+
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = async () => {
+      const inputData = preprocessImage(img);
+      setStatus('Running inference…');
+      await runInference(currentModel, inputData);
+      setStatus('Ready — upload an image or use the default cat', 'success');
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+init().catch(err => {
+  setStatus(`Error: ${err.message}`, 'error');
+  log(err.stack || err.message);
+  console.error(err);
+});
+</script>
+
+</body>
+</html>
