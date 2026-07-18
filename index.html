@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiteRT.js Samples</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #0f0f0f; color: #e0e0e0;
+    display: flex; flex-direction: column; align-items: center; padding: 2rem; min-height: 100vh;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; color: #7b46f6; }
+  .subtitle { color: #888; font-size: 0.85rem; margin-bottom: 2rem; }
+
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1rem; max-width: 700px; width: 100%;
+  }
+
+  .card {
+    background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px;
+    padding: 1.5rem; text-decoration: none; color: inherit;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .card:hover { border-color: #7b46f6; transform: translateY(-1px); }
+
+  .card h2 { font-size: 1.1rem; color: #e0e0e0; margin-bottom: 0.4rem; }
+  .card p  { font-size: 0.85rem; color: #888; line-height: 1.5; }
+  .card .tag {
+    display: inline-block; background: #2a2a2a; color: #7b46f6;
+    padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.7rem;
+    margin-top: 0.75rem; font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+
+  footer { margin-top: 3rem; font-size: 0.75rem; color: #555; }
+  footer a { color: #7b46f6; text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<h1>LiteRT.js Samples</h1>
+<p class="subtitle">Browser-based ML inference with WebGPU &amp; WASM</p>
+
+<div class="grid">
+
+  <a class="card" href="image-classification/">
+    <h2>Image Classification</h2>
+    <p>MobileNetV4 running in the browser. Upload an image or use the default — get top-5 ImageNet predictions in real time.</p>
+    <span class="tag">WebGPU</span>
+    <span class="tag">WASM</span>
+    <span class="tag">MobileNetV4</span>
+  </a>
+
+</div>
+
+<footer>
+  Powered by <a href="https://ai.google.dev/edge/litert/web">LiteRT.js</a> &middot;
+  <a href="https://github.com/xprilion/litert-js-samples">GitHub</a>
+</footer>
+
+</body>
+</html>
