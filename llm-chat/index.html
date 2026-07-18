@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiteRT-LM — Browser LLM Chat</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #0f0f0f; color: #e0e0e0;
+    display: flex; flex-direction: column; align-items: center; padding: 1rem; min-height: 100vh;
+  }
+  h1 { font-size: 1.3rem; color: #7b46f6; }
+  .subtitle { color: #888; font-size: 0.8rem; margin-bottom: 1rem; text-align: center; }
+
+  .container { max-width: 640px; width: 100%; flex: 1; display: flex; flex-direction: column; }
+
+  .status {
+    background: #1a2a1a; border: 1px solid #2a4a2a; border-radius: 8px;
+    padding: 0.6rem 1rem; margin-bottom: 0.75rem; font-size: 0.8rem;
+    font-family: 'SF Mono', 'Fira Code', monospace; display: none;
+  }
+  .status.visible { display: block; }
+  .status.error { background: #2a1a1a; border-color: #4a2a2a; color: #f87171; }
+  .status.success { background: #1a2a1a; border-color: #2a4a2a; color: #4ade80; }
+
+  #messages {
+    flex: 1; overflow-y: auto; margin-bottom: 0.75rem;
+    display: flex; flex-direction: column; gap: 0.75rem;
+  }
+  .msg { max-width: 85%; padding: 0.6rem 0.9rem; border-radius: 12px; font-size: 0.9rem; line-height: 1.5; }
+  .msg.user { align-self: flex-end; background: #7b46f6; color: white; }
+  .msg.assistant { align-self: flex-start; background: #1a1a1a; border: 1px solid #2a2a2a; }
+  .msg.assistant.generating { border-color: #7b46f6; }
+
+  .input-row { display: flex; gap: 0.5rem; }
+  #input {
+    flex: 1; padding: 0.6rem 0.8rem; border-radius: 10px; border: 1px solid #2a2a2a;
+    background: #1a1a1a; color: #e0e0e0; font-size: 0.9rem; font-family: inherit;
+    outline: none;
+  }
+  #input:focus { border-color: #7b46f6; }
+  #send {
+    padding: 0.6rem 1.2rem; border-radius: 10px; border: none;
+    background: #7b46f6; color: white; cursor: pointer; font-size: 0.9rem;
+  }
+  #send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .back-link { color: #7b46f6; text-decoration: none; font-size: 0.75rem; margin-bottom: 0.5rem; }
+  .back-link:hover { text-decoration: underline; }
+
+  .loading-dot { display: inline-block; width: 6px; height: 6px; background: #7b46f6; border-radius: 50%; animation: pulse 1s infinite; margin-left: 3px; }
+  .loading-dot:nth-child(2) { animation-delay: 0.2s; }
+  .loading-dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes pulse { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
+</style>
+</head>
+<body>
+
+<a class="back-link" href="../">← Back to Home</a>
+<h1>LiteRT-LM Chat</h1>
+<p class="subtitle">Gemma 4 E2B — running locally in your browser (WebGPU)</p>
+
+<div class="container">
+  <div id="status" class="status"></div>
+  <div id="messages"></div>
+  <div class="input-row">
+    <input id="input" type="text" placeholder="Type a message…" disabled />
+    <button id="send" disabled>Send</button>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "@litert-lm/core": "https://cdn.jsdelivr.net/npm/@litert-lm/core@0.14.0/dist/index.js",
+    "@litertjs/wasm-utils": "https://cdn.jsdelivr.net/npm/@litertjs/wasm-utils@2.5.0/dist/index.js"
+  }
+}
+</script>
+<script type="module">
+import { loadLiteRtLm, Engine, Backend } from '@litert-lm/core';
+
+const MODEL_URL = 'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm';
+const WASM_PATH = 'https://cdn.jsdelivr.net/npm/@litert-lm/core@0.14.0/wasm/';
+
+const statusEl = document.getElementById('status');
+const messagesEl = document.getElementById('messages');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+
+let chat = null;
+let loading = false;
+
+function setStatus(msg, cls = '') {
+  statusEl.textContent = msg;
+  statusEl.className = 'status visible ' + cls;
+}
+
+function hideStatus() { statusEl.className = 'status'; }
+
+function addMessage(role, content, generating = false) {
+  const el = document.createElement('div');
+  el.className = `msg ${role}${generating ? ' generating' : ''}`;
+  el.textContent = content;
+  messagesEl.appendChild(el);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return el;
+}
+
+function formatSize(bytes) {
+  if (bytes > 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+  if (bytes > 1e6) return (bytes / 1e6).toFixed(1) + ' MB';
+  return (bytes / 1e3).toFixed(0) + ' KB';
+}
+
+async function init() {
+  setStatus('Loading WASM runtime…');
+  
+  const litertLm = await loadLiteRtLm(WASM_PATH);
+  setStatus('WASM loaded. Downloading model (1.9 GB, one-time)…');
+
+  // Try WebGPU, fall back to CPU
+  let engine, backendLabel;
+  try {
+    engine = await Engine.create({ model: MODEL_URL, backend: Backend.GPU });
+    backendLabel = 'WebGPU';
+    setStatus('Model loaded on WebGPU — ready.', 'success');
+  } catch (e) {
+    setStatus(`WebGPU: ${e.message}. Trying CPU…`);
+    engine = await Engine.create({ model: MODEL_URL, backend: Backend.CPU });
+    backendLabel = 'CPU (WebAssembly)';
+    setStatus('Model loaded on CPU — ready.', 'success');
+  }
+
+  chat = await engine.createConversation({
+    sessionConfig: {
+      maxOutputTokens: 1024,
+      samplerParams: { temperature: 0.7, topP: 0.95 },
+    },
+    preface: {
+      messages: [{ role: 'system', content: 'You are a helpful, concise assistant. Keep responses brief and to the point.' }]
+    }
+  });
+
+  inputEl.disabled = false;
+  sendBtn.disabled = false;
+  inputEl.focus();
+
+  addMessage('assistant', `Hi! I'm Gemma 4 E2B running entirely in your browser on ${backendLabel}. Ask me anything.`);
+}
+
+async function sendMessage() {
+  const text = inputEl.value.trim();
+  if (!text || loading || !chat) return;
+  loading = true;
+  inputEl.value = '';
+  inputEl.disabled = true;
+  sendBtn.disabled = true;
+
+  addMessage('user', text);
+
+  const responseEl = addMessage('assistant', '', true);
+  let fullText = '';
+
+  try {
+    const stream = chat.sendMessageStreaming(text);
+    const reader = stream.getReader();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value.content) {
+        // content can be string or ContentPart[]
+        const chunk = typeof value.content === 'string' ? value.content : '';
+        fullText += chunk;
+        responseEl.textContent = fullText;
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+    }
+  } catch (e) {
+    responseEl.textContent = fullText || `Error: ${e.message}`;
+  } finally {
+    responseEl.classList.remove('generating');
+    loading = false;
+    inputEl.disabled = false;
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+}
+
+sendBtn.addEventListener('click', sendMessage);
+inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMessage(); });
+
+init().catch(err => {
+  setStatus(`Error: ${err.message}`, 'error');
+  console.error(err);
+});
+</script>
+</body>
+</html>
