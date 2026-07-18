@@ -199,11 +199,15 @@ async function init() {
   
   let model, backend;
   try {
-    model = await loadAndCompile(MODEL_URL, { accelerator: 'webgpu' });
+    // Try WebGPU with a 15s timeout — it can hang on some setups
+    model = await Promise.race([
+      loadAndCompile(MODEL_URL, { accelerator: 'webgpu' }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('WebGPU compile timed out')), 15000))
+    ]);
     backend = 'WebGPU';
     log('Model loaded on WebGPU');
   } catch (e) {
-    log(`WebGPU unavailable (${e.message}), falling back to WASM…`);
+    log(`WebGPU: ${e.message}, falling back to WASM…`);
     model = await loadAndCompile(MODEL_URL, { accelerator: 'wasm' });
     backend = 'WASM (CPU)';
     log('Model loaded on WASM');
