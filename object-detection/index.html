@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiteRT.js — Object Detection Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #0f0f0f; color: #e0e0e0;
+    display: flex; flex-direction: column; align-items: center; padding: 2rem; min-height: 100vh;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; color: #7b46f6; }
+  .subtitle { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+  .card {
+    background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px;
+    padding: 1.5rem; max-width: 640px; width: 100%;
+  }
+  .status {
+    background: #1a2a1a; border: 1px solid #2a4a2a; border-radius: 8px;
+    padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.85rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .status.error { background: #2a1a1a; border-color: #4a2a2a; color: #f87171; }
+  .status.success { background: #1a2a1a; border-color: #2a4a2a; color: #4ade80; }
+  .status.info { background: #1a1a2a; border-color: #2a2a4a; color: #93c5fd; }
+  canvas {
+    max-width: 100%; border-radius: 8px; margin: 1rem auto; display: block;
+    border: 1px solid #2a2a2a;
+  }
+  #image-input { display: none; }
+  .upload-btn {
+    display: inline-block; padding: 0.5rem 1rem; background: #7b46f6; color: white;
+    border-radius: 8px; cursor: pointer; font-size: 0.85rem; border: none;
+    margin: 0.5rem 0; transition: background 0.2s;
+  }
+  .upload-btn:hover { background: #6a35e5; }
+  .image-url-row {
+    display: flex; gap: 0.5rem; margin-top: 0.5rem;
+  }
+  .image-url-row input {
+    flex: 1; background: #0f0f0f; border: 1px solid #2a2a2a; border-radius: 6px;
+    color: #e0e0e0; padding: 0.4rem 0.6rem; font-size: 0.8rem; font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .image-url-row button {
+    background: #2a2a2a; color: #e0e0e0; border: 1px solid #3a3a3a;
+    border-radius: 6px; padding: 0.4rem 0.8rem; cursor: pointer; font-size: 0.8rem;
+  }
+  .image-url-row button:hover { background: #3a3a3a; }
+  .results { margin-top: 1rem; max-height: 300px; overflow-y: auto; }
+  .result-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.4rem 0.6rem; border-bottom: 1px solid #2a2a2a; font-size: 0.85rem;
+  }
+  .result-row:last-child { border-bottom: none; }
+  .det-class { flex: 1; }
+  .det-score { color: #7b46f6; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .no-dets { color: #888; font-style: italic; text-align: center; padding: 1rem; }
+  #log { font-size: 0.75rem; color: #666; margin-top: 0.5rem; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .progress-bar {
+    width: 100%; height: 4px; background: #2a2a2a; border-radius: 2px;
+    margin-top: 0.5rem; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: #7b46f6; border-radius: 2px;
+    transition: width 0.3s ease; width: 0%;
+  }
+  .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .back-link { color: #7b46f6; text-decoration: none; font-size: 0.8rem; margin-bottom: 1rem; display: inline-block; }
+  .back-link:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<h1>LiteRT.js</h1>
+<p class="subtitle">SSD MobileNet V2 — Object Detection (COCO)</p>
+
+<a class="back-link" href="../">← Back to Home</a>
+
+<div class="card">
+  <div id="status" class="status">Initializing…</div>
+
+  <div class="progress-bar" id="progress-bar">
+    <div class="progress-fill" id="progress-fill"></div>
+  </div>
+
+  <canvas id="canvas" width="640" height="480"></canvas>
+
+  <div class="actions">
+    <label class="upload-btn" for="image-input">📁 Upload Image</label>
+    <input type="file" id="image-input" accept="image/*">
+  </div>
+
+  <div class="image-url-row">
+    <input type="text" id="url-input" placeholder="Or paste an image URL…">
+    <button id="url-go">Load</button>
+  </div>
+
+  <div class="results" id="results">
+    <div class="no-dets">Run detection to see results</div>
+  </div>
+  <div id="log"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "@litertjs/core": "https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/dist/index.min.js",
+    "@litertjs/wasm-utils": "https://cdn.jsdelivr.net/npm/@litertjs/wasm-utils@2.5.0/dist/index.min.js"
+  }
+}
+</script>
+<script type="module">
+import { loadLiteRt, loadAndCompile, Tensor } from '@litertjs/core';
+
+// --- DOM refs ---
+const statusEl   = document.getElementById('status');
+const resultsEl  = document.getElementById('results');
+const logEl      = document.getElementById('log');
+const canvas     = document.getElementById('canvas');
+const ctx        = canvas.getContext('2d');
+const progressBar = document.getElementById('progress-bar');
+const progressFill = document.getElementById('progress-fill');
+
+// --- State ---
+let currentModel = null;
+let currentImage = null;   // the Image element currently displayed
+let lastDetections = [];
+
+// --- COCO 90-class labels (index 0..90; 0 = background) ---
+// Matches TensorFlow Object Detection API label map (mscoco_label_map.pbtxt)
+const COCO_CLASSES = [
+  'background',        // 0
+  'person',             // 1
+  'bicycle',            // 2
+  'car',                // 3
+  'motorcycle',         // 4
+  'airplane',           // 5
+  'bus',                // 6
+  'train',              // 7
+  'truck',              // 8
+  'boat',               // 9
+  'traffic light',      // 10
+  'fire hydrant',       // 11
+  '???',                // 12 (gap)
+  'stop sign',          // 13
+  'parking meter',      // 14
+  'bench',              // 15
+  'bird',               // 16
+  'cat',                // 17
+  'dog',                // 18
+  'horse',              // 19
+  'sheep',              // 20
+  'cow',                // 21
+  'elephant',           // 22
+  'bear',               // 23
+  'zebra',              // 24
+  'giraffe',            // 25
+  '???',                // 26 (gap)
+  'backpack',           // 27
+  'umbrella',           // 28
+  '???',                // 29 (gap)
+  '???',                // 30 (gap)
+  'handbag',            // 31
+  'tie',                // 32
+  'suitcase',           // 33
+  'frisbee',            // 34
+  'skis',               // 35
+  'snowboard',          // 36
+  'sports ball',        // 37
+  'kite',               // 38
+  'baseball bat',       // 39
+  'baseball glove',     // 40
+  'skateboard',         // 41
+  'surfboard',          // 42
+  'tennis racket',      // 43
+  'bottle',             // 44
+  '???',                // 45 (gap)
+  'wine glass',         // 46
+  'cup',                // 47
+  'fork',               // 48
+  'knife',              // 49
+  'spoon',              // 50
+  'bowl',               // 51
+  'banana',             // 52
+  'apple',              // 53
+  'sandwich',           // 54
+  'orange',             // 55
+  'broccoli',           // 56
+  'carrot',             // 57
+  'hot dog',            // 58
+  'pizza',              // 59
+  'donut',              // 60
+  'cake',               // 61
+  'chair',              // 62
+  'couch',              // 63
+  'potted plant',       // 64
+  'bed',                // 65
+  '???',                // 66 (gap)
+  'dining table',       // 67
+  '???',                // 68 (gap)
+  '???',                // 69 (gap)
+  'toilet',             // 70
+  '???',                // 71 (gap)
+  'tv',                 // 72
+  'laptop',             // 73
+  'mouse',              // 74
+  'remote',             // 75
+  'keyboard',           // 76
+  'cell phone',         // 77
+  'microwave',          // 78
+  'oven',               // 79
+  'toaster',            // 80
+  'sink',               // 81
+  'refrigerator',       // 82
+  '???',                // 83 (gap)
+  'book',               // 84
+  'clock',              // 85
+  'vase',               // 86
+  'scissors',           // 87
+  'teddy bear',         // 88
+  'hair drier',         // 89
+  'toothbrush'          // 90
+];
+
+// --- Utilities ---
+function log(msg) {
+  logEl.textContent = msg;
+  console.log(msg);
+}
+
+function setStatus(msg, cls = '') {
+  statusEl.textContent = msg;
+  statusEl.className = 'status ' + (cls || '');
+}
+
+function setProgress(pct) {
+  progressFill.style.width = Math.min(100, Math.max(0, pct)) + '%';
+  if (pct >= 100) {
+    setTimeout(() => { progressFill.style.width = '0%'; }, 800);
+  }
+}
+
+// --- Preprocess: resize image to 300x300, output Uint8Array (quantized model, 0-255) ---
+function preprocessImage(img) {
+  // Use an offscreen canvas at model input size
+  const offCvs = document.createElement('canvas');
+  offCvs.width = 300;
+  offCvs.height = 300;
+  const offCtx = offCvs.getContext('2d');
+  offCtx.drawImage(img, 0, 0, 300, 300);
+  const imageData = offCtx.getImageData(0, 0, 300, 300);
+
+  // NHWC layout, uint8 (0-255) for quantized model
+  const input = new Uint8Array(1 * 300 * 300 * 3);
+  for (let y = 0; y < 300; y++) {
+    for (let x = 0; x < 300; x++) {
+      const srcIdx = (y * 300 + x) * 4;  // RGBA
+      const dstBase = y * 300 * 3 + x * 3;
+      input[dstBase + 0] = imageData.data[srcIdx];     // R
+      input[dstBase + 1] = imageData.data[srcIdx + 1]; // G
+      input[dstBase + 2] = imageData.data[srcIdx + 2]; // B
+    }
+  }
+  return input;
+}
+
+// --- Run inference ---
+async function runDetection(model, img) {
+  setStatus('Preprocessing image…');
+  const inputData = preprocessImage(img);
+  const inputTensor = new Tensor(inputData, [1, 300, 300, 3]);
+
+  setStatus('Running inference…');
+  const startTime = performance.now();
+  const results = await model.run(inputTensor);
+  const elapsed = (performance.now() - startTime).toFixed(1);
+
+  // Expect 4 output tensors: boxes, classes, scores, num_detections
+  if (results.length < 4) {
+    throw new Error(`Expected 4 output tensors, got ${results.length}`);
+  }
+
+  const boxesData  = await results[0].data();  // [1, N, 4]  — normalized [ymin, xmin, ymax, xmax]
+  const classData  = await results[1].data();  // [1, N]     — class indices (int or float)
+  const scoreData  = await results[2].data();  // [1, N]     — confidence scores
+  const numData    = await results[3].data();  // [1]        — number of valid detections
+
+  const numDetections = Math.round(numData[0]);
+
+  // Parse detections — filter by score > 0.5
+  const detections = [];
+  for (let i = 0; i < numDetections; i++) {
+    const score = scoreData[i];
+    if (score > 0.5) {
+      detections.push({
+        bbox: [
+          boxesData[i * 4 + 0],  // ymin
+          boxesData[i * 4 + 1],  // xmin
+          boxesData[i * 4 + 2],  // ymax
+          boxesData[i * 4 + 3],  // xmax
+        ],
+        classId: Math.round(classData[i]),
+        score: score,
+      });
+    }
+  }
+
+  // Cleanup
+  inputTensor.delete();
+  results.forEach(r => r.delete());
+
+  log(`Inference: ${elapsed}ms · ${numDetections} detections · ${detections.length} above 0.5 threshold`);
+  return detections;
+}
+
+// --- Draw image + boxes on canvas ---
+function drawResults(img, detections) {
+  // Resize canvas to image natural size, capped
+  const maxW = 640;
+  const scale = Math.min(1, maxW / img.naturalWidth);
+  canvas.width = Math.round(img.naturalWidth * scale);
+  canvas.height = Math.round(img.naturalHeight * scale);
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  // Draw each detection
+  const colors = [
+    '#7b46f6', '#f6467b', '#46f67b', '#f6b446', '#46b4f6',
+    '#b446f6', '#f6f646', '#46f6b4', '#f64646', '#46f646',
+  ];
+
+  detections.forEach((det, idx) => {
+    const [ymin, xmin, ymax, xmax] = det.bbox;
+    const x = xmin * canvas.width;
+    const y = ymin * canvas.height;
+    const w = (xmax - xmin) * canvas.width;
+    const h = (ymax - ymin) * canvas.height;
+    const color = colors[idx % colors.length];
+    const label = COCO_CLASSES[det.classId] || `class ${det.classId}`;
+    const text = `${label} ${(det.score * 100).toFixed(0)}%`;
+
+    // Box
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+
+    // Label background
+    ctx.font = 'bold 13px system-ui, -apple-system, sans-serif';
+    const textW = ctx.measureText(text).width + 8;
+    const textH = 20;
+    const labelY = y - textH > 0 ? y - textH : y;
+    ctx.fillStyle = color;
+    ctx.fillRect(x, labelY, textW, textH);
+
+    // Label text
+    ctx.fillStyle = '#fff';
+    ctx.fillText(text, x + 4, labelY + 14);
+  });
+}
+
+// --- Display results list ---
+function displayResultsList(detections) {
+  if (detections.length === 0) {
+    resultsEl.innerHTML = '<div class="no-dets">No objects detected (score > 0.5)</div>';
+    return;
+  }
+
+  // Sort by score descending
+  const sorted = [...detections].sort((a, b) => b.score - a.score);
+  resultsEl.innerHTML = sorted.map(d => {
+    const label = COCO_CLASSES[d.classId] || `class ${d.classId}`;
+    return `
+      <div class="result-row">
+        <span class="det-class">${label}</span>
+        <span class="det-score">${(d.score * 100).toFixed(1)}%</span>
+      </div>
+    `;
+  }).join('');
+}
+
+// --- Handle image: preprocess, run, draw ---
+async function handleImage(img) {
+  if (!currentModel) {
+    setStatus('Model not ready yet…', 'info');
+    return;
+  }
+
+  currentImage = img;
+
+  // Draw raw image first
+  const maxW = 640;
+  const scale = Math.min(1, maxW / img.naturalWidth);
+  canvas.width = Math.round(img.naturalWidth * scale);
+  canvas.height = Math.round(img.naturalHeight * scale);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  try {
+    const detections = await runDetection(currentModel, img);
+    lastDetections = detections;
+    drawResults(img, detections);
+    displayResultsList(detections);
+    setStatus(`Detected ${detections.length} objects`, 'success');
+  } catch (err) {
+    setStatus(`Detection error: ${err.message}`, 'error');
+    log(err.stack || err.message);
+    console.error(err);
+  }
+}
+
+// --- Load image from URL ---
+function loadImageFromURL(url) {
+  setStatus('Loading image…', 'info');
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => handleImage(img);
+  img.onerror = () => setStatus('Failed to load image from URL', 'error');
+  img.src = url;
+}
+
+// --- Init ---
+async function init() {
+  // Step 1: Load WASM runtime
+  setStatus('Loading LiteRT.js WASM runtime…');
+  setProgress(10);
+  const wasmPath = 'https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm/';
+  await loadLiteRt(wasmPath);
+  log('WASM runtime loaded');
+  setProgress(30);
+
+  // Step 2: Load model
+  setStatus('Loading SSD MobileNet V2 model (~5.9MB)…');
+  const MODEL_URL = 'https://raw.githubusercontent.com/google-coral/test_data/master/ssd_mobilenet_v2_coco_quant_postprocess.tflite';
+
+  let model, backend;
+  try {
+    // Try WebGPU with 15s timeout
+    model = await Promise.race([
+      loadAndCompile(MODEL_URL, { accelerator: 'webgpu' }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('WebGPU compile timed out')), 15000))
+    ]);
+    backend = 'WebGPU';
+    log('Model loaded on WebGPU');
+  } catch (e) {
+    log(`WebGPU: ${e.message}, falling back to WASM…`);
+    setProgress(50);
+    model = await loadAndCompile(MODEL_URL, { accelerator: 'wasm' });
+    backend = 'WASM (CPU)';
+    log('Model loaded on WASM');
+  }
+
+  setProgress(100);
+  currentModel = model;
+  setStatus(`Ready — ${backend} · upload an image or load from URL`, 'success');
+
+  // Step 3: Load default test image (street scene)
+  const DEFAULT_IMAGE = 'street.jpg';
+  const img = new Image();
+  img.onload = () => handleImage(img);
+  img.src = DEFAULT_IMAGE;
+}
+
+// --- Event handlers ---
+
+// File upload
+document.getElementById('image-input').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => handleImage(img);
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+// URL load
+document.getElementById('url-go').addEventListener('click', () => {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) return;
+  loadImageFromURL(url);
+});
+
+document.getElementById('url-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const url = e.target.value.trim();
+    if (url) loadImageFromURL(url);
+  }
+});
+
+// --- Start ---
+init().catch(err => {
+  setStatus(`Fatal error: ${err.message}`, 'error');
+  log(err.stack || err.message);
+  console.error(err);
+});
+</script>
+
+</body>
+</html>

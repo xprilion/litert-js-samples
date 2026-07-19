@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiteRT.js — Image Segmentation Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #0f0f0f; color: #e0e0e0;
+    display: flex; flex-direction: column; align-items: center; padding: 2rem; min-height: 100vh;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; color: #7b46f6; }
+  .subtitle { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+  .card {
+    background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px;
+    padding: 1.5rem; max-width: 800px; width: 100%;
+  }
+  .status {
+    background: #1a2a1a; border: 1px solid #2a4a2a; border-radius: 8px;
+    padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.85rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .status.error { background: #2a1a1a; border-color: #4a2a2a; color: #f87171; }
+  .status.success { background: #1a2a1a; border-color: #2a4a2a; color: #4ade80; }
+
+  .canvas-row {
+    display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+  .canvas-wrap {
+    text-align: center;
+  }
+  .canvas-wrap .label {
+    font-size: 0.75rem; color: #888; margin-top: 0.25rem;
+  }
+  canvas {
+    border-radius: 8px;
+    background: #111;
+    width: 257px; height: 257px;
+    image-rendering: pixelated;
+  }
+
+  .upload-section {
+    display: flex; gap: 0.5rem; align-items: center; justify-content: center;
+    margin-bottom: 1rem; flex-wrap: wrap;
+  }
+  #image-input { display: none; }
+  .upload-btn, .overlay-btn {
+    display: inline-block; padding: 0.5rem 1rem; background: #7b46f6; color: white;
+    border-radius: 8px; cursor: pointer; font-size: 0.85rem; border: none;
+    white-space: nowrap;
+  }
+  .upload-btn:hover, .overlay-btn:hover { background: #6a35e5; }
+  .overlay-btn { background: #2a2a2a; border: 1px solid #444; }
+  .overlay-btn:hover { background: #3a3a3a; }
+  .overlay-btn.active { background: #7b46f6; border-color: #7b46f6; }
+
+  .legend {
+    margin-top: 1rem;
+  }
+  .legend-title {
+    font-size: 0.8rem; color: #888; margin-bottom: 0.5rem;
+  }
+  .legend-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 0.25rem;
+    max-height: 200px; overflow-y: auto;
+    padding-right: 0.5rem;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 0.4rem;
+    font-size: 0.7rem; color: #aaa; padding: 0.15rem 0;
+  }
+  .legend-swatch {
+    width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0;
+  }
+
+  #log { font-size: 0.7rem; color: #555; margin-top: 0.75rem; text-align: center; }
+
+  .loading-bar-wrap {
+    width: 100%; height: 4px; background: #2a2a2a; border-radius: 2px;
+    margin: 0.5rem 0; overflow: hidden; display: none;
+  }
+  .loading-bar-inner {
+    height: 100%; background: #7b46f6; border-radius: 2px;
+    width: 0%; transition: width 0.3s ease;
+  }
+
+  @media (max-width: 600px) {
+    .canvas-row { flex-direction: column; align-items: center; }
+  }
+</style>
+</head>
+<body>
+
+<h1>LiteRT.js</h1>
+<p class="subtitle">DeepLab V3 — Image Segmentation (WebGPU)</p>
+
+<a href="../" style="color:#7b46f6;text-decoration:none;font-size:0.8rem;margin-bottom:1rem;display:inline-block;">&larr; Back to Home</a>
+
+<div class="card">
+  <div id="status" class="status">Initializing&hellip;</div>
+
+  <div class="loading-bar-wrap" id="loading-bar-wrap">
+    <div class="loading-bar-inner" id="loading-bar"></div>
+  </div>
+
+  <div class="canvas-row">
+    <div class="canvas-wrap">
+      <canvas id="original-canvas" width="257" height="257"></canvas>
+      <div class="label">Original</div>
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="mask-canvas" width="257" height="257"></canvas>
+      <div class="label">Segmentation Mask</div>
+    </div>
+  </div>
+
+  <div class="upload-section">
+    <label class="upload-btn" for="image-input">&#x1F4C1; Upload Image</label>
+    <input type="file" id="image-input" accept="image/*">
+    <button class="overlay-btn" id="overlay-toggle" disabled>Overlay: Off</button>
+  </div>
+
+  <div class="legend">
+    <div class="legend-title">PASCAL VOC Classes</div>
+    <div class="legend-grid" id="legend-grid"></div>
+  </div>
+
+  <div id="log"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "@litertjs/core": "https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/dist/index.min.js",
+    "@litertjs/wasm-utils": "https://cdn.jsdelivr.net/npm/@litertjs/wasm-utils@2.5.0/dist/index.min.js"
+  }
+}
+</script>
+<script type="module">
+import { loadLiteRt, loadAndCompile, Tensor } from '@litertjs/core';
+
+// ── DOM refs ──────────────────────────────────────────────
+const statusEl   = document.getElementById('status');
+const logEl      = document.getElementById('log');
+const origCanvas = document.getElementById('original-canvas');
+const maskCanvas = document.getElementById('mask-canvas');
+const origCtx    = origCanvas.getContext('2d');
+const maskCtx    = maskCanvas.getContext('2d');
+const loadingBarWrap = document.getElementById('loading-bar-wrap');
+const loadingBar     = document.getElementById('loading-bar-inner');
+const overlayToggle  = document.getElementById('overlay-toggle');
+
+const INPUT_SIZE = 257;
+
+// ── PASCAL VOC 21 classes ─────────────────────────────────
+const PASCAL_CLASSES = [
+  'background', 'aeroplane', 'bicycle', 'bird', 'boat',
+  'bottle', 'bus', 'car', 'cat', 'chair',
+  'cow', 'dining table', 'dog', 'horse', 'motorbike',
+  'person', 'potted plant', 'sheep', 'sofa', 'train',
+  'tv/monitor'
+];
+
+const PASCAL_COLORS = [
+  [0,   0,   0  ],  // 0: background
+  [128, 0,   0  ],  // 1: aeroplane
+  [0,   128, 0  ],  // 2: bicycle
+  [128, 128, 0  ],  // 3: bird
+  [0,   0,   128],  // 4: boat
+  [128, 0,   128],  // 5: bottle
+  [0,   128, 128],  // 6: bus
+  [128, 128, 128],  // 7: car
+  [64,  0,   0  ],  // 8: cat
+  [192, 0,   0  ],  // 9: chair
+  [64,  128, 0  ],  // 10: cow
+  [192, 128, 0  ],  // 11: dining table
+  [64,  0,   128],  // 12: dog
+  [192, 0,   128],  // 13: horse
+  [64,  128, 128],  // 14: motorbike
+  [192, 128, 128],  // 15: person
+  [0,   64,  0  ],  // 16: potted plant
+  [128, 64,  0  ],  // 17: sheep
+  [0,   192, 0  ],  // 18: sofa
+  [128, 192, 0  ],  // 19: train
+  [0,   64,  128],  // 20: tv/monitor
+];
+
+// ── Build legend ───────────────────────────────────────────
+function buildLegend() {
+  const grid = document.getElementById('legend-grid');
+  grid.innerHTML = PASCAL_CLASSES.map((name, i) => {
+    const [r, g, b] = PASCAL_COLORS[i];
+    return `
+      <div class="legend-item">
+        <span class="legend-swatch" style="background:rgb(${r},${g},${b})"></span>
+        <span>${i}: ${name}</span>
+      </div>`;
+  }).join('');
+}
+buildLegend();
+
+// ── Logging ────────────────────────────────────────────────
+function log(msg) {
+  logEl.textContent = msg;
+  console.log(msg);
+}
+
+function setStatus(msg, cls = '') {
+  statusEl.textContent = msg;
+  statusEl.className = 'status ' + cls;
+}
+
+function setProgress(pct) {
+  loadingBarWrap.style.display = pct > 0 ? 'block' : 'none';
+  loadingBar.style.width = Math.min(100, Math.max(0, pct)) + '%';
+}
+
+// ── Preprocess: draw image → 257×257, return Float32Array ──
+function preprocessImage(img) {
+  origCtx.drawImage(img, 0, 0, INPUT_SIZE, INPUT_SIZE);
+  const imageData = origCtx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
+
+  // DeepLab quantized model expects uint8 [0,255] input.
+  // We pass Float32 in [0,1] — LiteRT quantized delegate handles conversion.
+  const input = new Float32Array(1 * INPUT_SIZE * INPUT_SIZE * 3);
+  for (let y = 0; y < INPUT_SIZE; y++) {
+    for (let x = 0; x < INPUT_SIZE; x++) {
+      const px = (y * INPUT_SIZE + x) * 4;
+      const base = y * INPUT_SIZE * 3 + x * 3;
+      input[base + 0] = imageData.data[px]     / 255.0;
+      input[base + 1] = imageData.data[px + 1] / 255.0;
+      input[base + 2] = imageData.data[px + 2] / 255.0;
+    }
+  }
+  return input;
+}
+
+// ── Draw segmentation mask from class map (257×257 array) ──
+function drawSegmentationMask(classMap) {
+  const imageData = maskCtx.createImageData(INPUT_SIZE, INPUT_SIZE);
+  for (let y = 0; y < INPUT_SIZE; y++) {
+    for (let x = 0; x < INPUT_SIZE; x++) {
+      const classIdx = classMap[y * INPUT_SIZE + x];
+      const [r, g, b] = PASCAL_COLORS[classIdx] || [0, 0, 0];
+      const px = (y * INPUT_SIZE + x) * 4;
+      imageData.data[px]     = r;
+      imageData.data[px + 1] = g;
+      imageData.data[px + 2] = b;
+      imageData.data[px + 3] = 255;
+    }
+  }
+  maskCtx.putImageData(imageData, 0, 0);
+}
+
+// ── Apply argmax over class dimension ─────────────────────
+// output shape: either [1, 257, 257, 21] or [1, 21, 257, 257]
+function argmaxSegmentation(outputData, shape) {
+  const [_, h, w, c] = shape;
+  const numPixels = h * w;
+
+  // Determine which dimension has 21 channels
+  let classMap;
+  if (c === 21) {
+    // Shape [1, 257, 257, 21] — NHWC, channels last
+    classMap = new Uint8Array(numPixels);
+    for (let i = 0; i < numPixels; i++) {
+      let maxVal = -Infinity;
+      let maxIdx = 0;
+      for (let cls = 0; cls < 21; cls++) {
+        const val = outputData[i * 21 + cls];
+        if (val > maxVal) { maxVal = val; maxIdx = cls; }
+      }
+      classMap[i] = maxIdx;
+    }
+  } else if (h === 21) {
+    // Shape [1, 21, 257, 257] — NCHW, channels first
+    classMap = new Uint8Array(numPixels);
+    for (let i = 0; i < numPixels; i++) {
+      let maxVal = -Infinity;
+      let maxIdx = 0;
+      for (let cls = 0; cls < 21; cls++) {
+        const val = outputData[cls * numPixels + i];
+        if (val > maxVal) { maxVal = val; maxIdx = cls; }
+      }
+      classMap[i] = maxIdx;
+    }
+  } else {
+    // Single-channel output (already class indices, e.g. uint8 0-20)
+    log(`Output shape [1,${h},${w},${c}] — treating as class indices directly`);
+    return new Uint8Array(outputData);
+  }
+
+  return classMap;
+}
+
+// ── Alpha-blend overlay: original image + mask ────────────
+let overlayActive = false;
+let lastClassMap = null;
+
+function toggleOverlay() {
+  overlayActive = !overlayActive;
+  overlayToggle.textContent = 'Overlay: ' + (overlayActive ? 'On' : 'Off');
+  overlayToggle.classList.toggle('active', overlayActive);
+
+  if (overlayActive && lastClassMap) {
+    drawOverlay(lastClassMap);
+  } else if (!overlayActive && lastClassMap) {
+    drawSegmentationMask(lastClassMap);
+  }
+}
+
+function drawOverlay(classMap) {
+  // Read back the original image from origCanvas
+  const origData = origCtx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
+  const imageData = maskCtx.createImageData(INPUT_SIZE, INPUT_SIZE);
+  const alpha = 0.5;
+
+  for (let y = 0; y < INPUT_SIZE; y++) {
+    for (let x = 0; x < INPUT_SIZE; x++) {
+      const classIdx = classMap[y * INPUT_SIZE + x];
+      const [mr, mg, mb] = PASCAL_COLORS[classIdx] || [0, 0, 0];
+      const px = (y * INPUT_SIZE + x) * 4;
+      const or = origData.data[px];
+      const og = origData.data[px + 1];
+      const ob = origData.data[px + 2];
+
+      imageData.data[px]     = or * (1 - alpha) + mr * alpha;
+      imageData.data[px + 1] = og * (1 - alpha) + mg * alpha;
+      imageData.data[px + 2] = ob * (1 - alpha) + mb * alpha;
+      imageData.data[px + 3] = 255;
+    }
+  }
+  maskCtx.putImageData(imageData, 0, 0);
+}
+
+overlayToggle.addEventListener('click', toggleOverlay);
+
+// ── Run inference ─────────────────────────────────────────
+async function runInference(model, inputData) {
+  const inputTensor = new Tensor(inputData, [1, INPUT_SIZE, INPUT_SIZE, 3]);
+  const startTime = performance.now();
+  const results = await model.run(inputTensor);
+  const elapsed = (performance.now() - startTime).toFixed(1);
+
+  const outputTensor = results[0];
+  const outputShape = outputTensor.shape();
+  const outputData = await outputTensor.data();
+
+  log(`Inference: ${elapsed}ms · output shape: [${outputShape.join(', ')}]`);
+
+  // Apply argmax to get class map
+  const classMap = argmaxSegmentation(outputData, outputShape);
+
+  // Cleanup
+  inputTensor.delete();
+  results.forEach(r => r.delete());
+
+  // Draw
+  lastClassMap = classMap;
+  if (overlayActive) {
+    drawOverlay(classMap);
+  } else {
+    drawSegmentationMask(classMap);
+  }
+
+  return classMap;
+}
+
+// ── Process an image ──────────────────────────────────────
+async function processImage(model, img) {
+  setStatus('Preprocessing image&hellip;');
+  await sleep(10); // let UI update
+  const inputData = preprocessImage(img);
+
+  setStatus('Running inference&hellip;');
+  await runInference(model, inputData);
+  setStatus('Ready &mdash; upload an image to try again', 'success');
+  overlayToggle.disabled = false;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── Init ──────────────────────────────────────────────────
+let currentModel = null;
+
+async function init() {
+  setProgress(5);
+
+  setStatus('Loading LiteRT.js WASM runtime&hellip;');
+  const wasmPath = 'https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm/';
+  await loadLiteRt(wasmPath);
+  log('WASM runtime loaded');
+  setProgress(15);
+
+  setStatus('Loading DeepLab V3 model (~0.7 MB)&hellip;');
+  const MODEL_URL = 'https://raw.githubusercontent.com/google-coral/test_data/master/deeplabv3_mnv2_dm05_pascal_quant.tflite';
+
+  let model, backend;
+  try {
+    setStatus('Compiling model on WebGPU (15s timeout)&hellip;');
+    setProgress(25);
+    model = await Promise.race([
+      loadAndCompile(MODEL_URL, { accelerator: 'webgpu' }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('WebGPU compile timed out')), 15000))
+    ]);
+    backend = 'WebGPU';
+    log('Model compiled on WebGPU');
+  } catch (e) {
+    log(`WebGPU: ${e.message}, falling back to WASM&hellip;`);
+    setStatus('Falling back to WASM&hellip;');
+    setProgress(40);
+    model = await loadAndCompile(MODEL_URL, { accelerator: 'wasm' });
+    backend = 'WASM (CPU)';
+    log('Model compiled on WASM');
+  }
+  setProgress(80);
+  currentModel = model;
+
+  setStatus('Running inference on default image&hellip;', 'success');
+
+  // Load default test image
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = async () => {
+    setProgress(90);
+    await processImage(model, img);
+    setProgress(0);
+  };
+  img.onerror = () => {
+    setProgress(0);
+    setStatus('Ready &mdash; upload an image to begin', 'success');
+    overlayToggle.disabled = false;
+  };
+  // Use a same-origin fallback image from sibling sample
+  img.src = 'scene.jpg';
+}
+
+// ── File upload ────────────────────────────────────────────
+document.getElementById('image-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file || !currentModel) return;
+
+  setStatus('Loading image&hellip;');
+  setProgress(10);
+
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = async () => {
+      setProgress(40);
+      await processImage(currentModel, img);
+      setProgress(0);
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+// ── Start ──────────────────────────────────────────────────
+init().catch(err => {
+  setStatus(`Error: ${err.message}`, 'error');
+  log(err.stack || err.message);
+  setProgress(0);
+  console.error(err);
+});
+</script>
+
+</body>
+</html>

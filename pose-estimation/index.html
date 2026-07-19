@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiteRT.js — Pose Estimation</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #0f0f0f; color: #e0e0e0;
+    display: flex; flex-direction: column; align-items: center; padding: 1.5rem; min-height: 100vh;
+  }
+  h1 { font-size: 1.3rem; color: #7b46f6; }
+  .subtitle { color: #888; font-size: 0.8rem; margin-bottom: 1rem; }
+  .back { color: #7b46f6; text-decoration: none; font-size: 0.8rem; margin-bottom: 1rem; }
+  .back:hover { text-decoration: underline; }
+
+  .container { max-width: 640px; width: 100%; }
+
+  .status {
+    background: #1a2a1a; border: 1px solid #2a4a2a; border-radius: 8px;
+    padding: 0.6rem 0.8rem; margin-bottom: 0.75rem; font-size: 0.8rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .status.error { background: #2a1a1a; border-color: #4a2a2a; color: #f87171; }
+  .status.success { background: #1a2a1a; border-color: #2a4a2a; color: #4ade80; }
+
+  .canvas-wrap { position: relative; margin: 1rem 0; }
+  canvas { max-width: 100%; border-radius: 8px; display: block; }
+
+  .upload-btn {
+    display: inline-block; padding: 0.5rem 1rem; background: #7b46f6; color: white;
+    border-radius: 8px; cursor: pointer; font-size: 0.85rem; margin-bottom: 1rem;
+  }
+  .upload-btn:hover { background: #6a35e5; }
+  #image-input { display: none; }
+
+  .keypoints-table {
+    display: grid; grid-template-columns: 1fr 1fr 1fr;
+    gap: 0.3rem; font-size: 0.78rem; margin-top: 0.75rem;
+  }
+  .kp-row {
+    display: contents;
+  }
+  .kp-name { color: #e0e0e0; padding: 0.2rem 0; }
+  .kp-pos { color: #888; font-family: monospace; font-size: 0.7rem; }
+  .kp-conf { font-family: monospace; text-align: right; }
+  .kp-conf.high { color: #4ade80; }
+  .kp-conf.mid { color: #fbbf24; }
+  .kp-conf.low { color: #f87171; }
+</style>
+</head>
+<body>
+
+<a class="back" href="../">← All samples</a>
+<h1>Pose Estimation</h1>
+<p class="subtitle">MoveNet Lightning · 17 keypoints · 2.8 MB</p>
+
+<div class="container">
+  <div id="status" class="status">Initializing…</div>
+
+  <div class="canvas-wrap">
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <label class="upload-btn" for="image-input">📁 Upload Image</label>
+  <input type="file" id="image-input" accept="image/*">
+
+  <div id="keypoints-display"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "@litertjs/core": "https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/dist/index.min.js",
+    "@litertjs/wasm-utils": "https://cdn.jsdelivr.net/npm/@litertjs/wasm-utils@2.5.0/dist/index.min.js"
+  }
+}
+</script>
+<script type="module">
+import { loadLiteRt, loadAndCompile, Tensor } from '@litertjs/core';
+
+const MODEL_URL = 'https://raw.githubusercontent.com/google-coral/test_data/master/movenet_single_pose_lightning_ptq.tflite';
+const INPUT_SIZE = 192;
+
+const el = (id) => document.getElementById(id);
+const statusEl = el('status');
+const canvas = el('canvas');
+const ctx = canvas.getContext('2d');
+const kpDisplay = el('keypoints-display');
+
+let currentModel = null;
+
+// 17 COCO keypoints
+const KEYPOINTS = [
+  'nose','left eye','right eye','left ear','right ear',
+  'left shoulder','right shoulder','left elbow','right elbow',
+  'left wrist','right wrist','left hip','right hip',
+  'left knee','right knee','left ankle','right ankle'
+];
+
+// Skeleton connections (pairs of keypoint indices)
+const EDGES = [
+  [0,1],[0,2],[1,3],[2,4],        // face
+  [5,7],[7,9],[6,8],[8,10],       // arms
+  [5,6],[5,11],[6,12],[11,12],    // torso
+  [11,13],[13,15],[12,14],[14,16] // legs
+];
+
+const EDGE_COLORS = [
+  '#fbbf24','#fbbf24','#fbbf24','#fbbf24',
+  '#60a5fa','#4ade80','#60a5fa','#4ade80',
+  '#f87171','#f87171','#f87171',
+  '#f472b6','#a78bfa','#f472b6','#a78bfa'
+];
+
+function setStatus(msg, cls = '') {
+  statusEl.textContent = msg;
+  statusEl.className = 'status ' + cls;
+}
+
+function preprocessImage(img) {
+  canvas.width = INPUT_SIZE;
+  canvas.height = INPUT_SIZE;
+  ctx.drawImage(img, 0, 0, INPUT_SIZE, INPUT_SIZE);
+  const imageData = ctx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
+  // Quantized model: uint8 input [0,255]
+  const input = new Uint8Array(1 * INPUT_SIZE * INPUT_SIZE * 3);
+  for (let i = 0; i < INPUT_SIZE * INPUT_SIZE; i++) {
+    input[i * 3] = imageData.data[i * 4];
+    input[i * 3 + 1] = imageData.data[i * 4 + 1];
+    input[i * 3 + 2] = imageData.data[i * 4 + 2];
+  }
+  return input;
+}
+
+async function runInference(model, inputData) {
+  setStatus('Running inference…');
+  const inputTensor = new Tensor(inputData, [1, INPUT_SIZE, INPUT_SIZE, 3]);
+  const startTime = performance.now();
+  const results = await model.run(inputTensor);
+  const elapsed = (performance.now() - startTime).toFixed(0);
+
+  const outputData = await results[0].data();
+  inputTensor.delete();
+  results.forEach(r => r.delete());
+
+  // MoveNet output: [1, 1, 17, 3] where dim 2 is [y, x, confidence]
+  // Reshape to [[y, x, conf], ...]
+  const keypoints = [];
+  for (let i = 0; i < 17; i++) {
+    keypoints.push({
+      y: outputData[i * 3],
+      x: outputData[i * 3 + 1],
+      score: outputData[i * 3 + 2]
+    });
+  }
+
+  setStatus(`${keypoints.filter(k => k.score > 0.3).length}/17 keypoints detected · ${elapsed}ms`, 'success');
+  return keypoints;
+}
+
+function drawResults(img, keypoints) {
+  // Draw original image at display size
+  canvas.width = img.naturalWidth || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  const dw = canvas.width, dh = canvas.height;
+  const kpRadius = Math.max(3, Math.min(dw, dh) * 0.015);
+
+  // Draw edges
+  EDGES.forEach(([a, b], i) => {
+    const ka = keypoints[a], kb = keypoints[b];
+    if (ka.score < 0.2 || kb.score < 0.2) return;
+    ctx.beginPath();
+    ctx.moveTo(ka.x * dw, ka.y * dh);
+    ctx.lineTo(kb.x * dw, kb.y * dh);
+    ctx.strokeStyle = EDGE_COLORS[i] || '#7b46f6';
+    ctx.lineWidth = Math.max(1.5, kpRadius * 0.5);
+    ctx.stroke();
+  });
+
+  // Draw keypoints
+  keypoints.forEach((kp, i) => {
+    if (kp.score < 0.2) return;
+    const x = kp.x * dw, y = kp.y * dh;
+    ctx.beginPath();
+    ctx.arc(x, y, kpRadius, 0, 2 * Math.PI);
+    ctx.fillStyle = kp.score > 0.5 ? '#4ade80' : '#fbbf24';
+    ctx.fill();
+    ctx.strokeStyle = '#0f0f0f';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+
+  // Keypoints table
+  kpDisplay.innerHTML = `<div class="keypoints-table">${
+    keypoints.map((kp, i) => {
+      const confClass = kp.score > 0.5 ? 'high' : kp.score > 0.2 ? 'mid' : 'low';
+      return `
+        <div class="kp-row">
+          <span class="kp-name">${KEYPOINTS[i]}</span>
+          <span class="kp-pos">(${(kp.x * 100).toFixed(0)}, ${(kp.y * 100).toFixed(0)})</span>
+          <span class="kp-conf ${confClass}">${(kp.score * 100).toFixed(0)}%</span>
+        </div>`;
+    }).join('')
+  }</div>`;
+}
+
+// --- Init ---
+async function init() {
+  setStatus('Loading LiteRT.js WASM runtime…');
+  const wasmPath = 'https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm/';
+  await loadLiteRt(wasmPath);
+
+  setStatus('Loading MoveNet Lightning model…');
+
+  let model;
+  try {
+    model = await Promise.race([
+      loadAndCompile(MODEL_URL, { accelerator: 'webgpu' }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('WebGPU timeout')), 15000))
+    ]);
+  } catch (e) {
+    setStatus(`WebGPU: ${e.message}, trying WASM…`);
+    model = await loadAndCompile(MODEL_URL, { accelerator: 'wasm' });
+  }
+
+  currentModel = model;
+  setStatus('Model ready — loading default image…', 'success');
+
+  const img = new Image();
+  img.onload = async () => {
+    const inputData = preprocessImage(img);
+    const keypoints = await runInference(model, inputData);
+    drawResults(img, keypoints);
+  };
+  img.src = 'person.jpg';
+}
+
+el('image-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file || !currentModel) return;
+
+  const img = new Image();
+  img.onload = async () => {
+    const inputData = preprocessImage(img);
+    const keypoints = await runInference(currentModel, inputData);
+    drawResults(img, keypoints);
+  };
+  img.src = URL.createObjectURL(file);
+});
+
+init().catch(err => {
+  setStatus(`Error: ${err.message}`, 'error');
+  console.error(err);
+});
+</script>
+
+</body>
+</html>
