@@ -136,7 +136,7 @@
 <script type="importmap">
 {
   "imports": {
-    "@litertjs/core": "https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/dist/index.min.js",
+    "@litertjs/core": "https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.3/dist/index.min.js",
     "@litertjs/wasm-utils": "https://cdn.jsdelivr.net/npm/@litertjs/wasm-utils@2.5.0/dist/index.min.js"
   }
 }
@@ -392,7 +392,7 @@ async function init() {
   setProgress(5);
 
   setStatus('Loading LiteRT.js WASM runtime&hellip;');
-  const wasmPath = 'https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm/';
+  const wasmPath = 'https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.3/wasm/';
   await loadLiteRt(wasmPath);
   log('WASM runtime loaded');
   setProgress(15);
