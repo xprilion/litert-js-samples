@@ -74,7 +74,7 @@
 <body>
 
 <h1>LiteRT.js</h1>
-<p class="subtitle">SSD MobileNet V2 — Object Detection (COCO)</p>
+<p class="subtitle">EfficientDet Lite0 — Object Detection (COCO)</p>
 
 <a class="back-link" href="../">← Back to Home</a>
 
@@ -242,22 +242,22 @@ function setProgress(pct) {
   }
 }
 
-// --- Preprocess: resize image to 300x300, output Uint8Array (quantized model, 0-255) ---
+// --- Preprocess: resize image to 320x320, output Uint8Array (quantized model, 0-255) ---
 function preprocessImage(img) {
   // Use an offscreen canvas at model input size
   const offCvs = document.createElement('canvas');
-  offCvs.width = 300;
-  offCvs.height = 300;
+  offCvs.width = 320;
+  offCvs.height = 320;
   const offCtx = offCvs.getContext('2d');
-  offCtx.drawImage(img, 0, 0, 300, 300);
-  const imageData = offCtx.getImageData(0, 0, 300, 300);
+  offCtx.drawImage(img, 0, 0, 320, 320);
+  const imageData = offCtx.getImageData(0, 0, 320, 320);
 
   // NHWC layout, uint8 (0-255) for quantized model
-  const input = new Uint8Array(1 * 300 * 300 * 3);
-  for (let y = 0; y < 300; y++) {
-    for (let x = 0; x < 300; x++) {
-      const srcIdx = (y * 300 + x) * 4;  // RGBA
-      const dstBase = y * 300 * 3 + x * 3;
+  const input = new Uint8Array(1 * 320 * 320 * 3);
+  for (let y = 0; y < 320; y++) {
+    for (let x = 0; x < 320; x++) {
+      const srcIdx = (y * 320 + x) * 4;  // RGBA
+      const dstBase = y * 320 * 3 + x * 3;
       input[dstBase + 0] = imageData.data[srcIdx];     // R
       input[dstBase + 1] = imageData.data[srcIdx + 1]; // G
       input[dstBase + 2] = imageData.data[srcIdx + 2]; // B
@@ -270,7 +270,7 @@ function preprocessImage(img) {
 async function runDetection(model, img) {
   setStatus('Preprocessing image…');
   const inputData = preprocessImage(img);
-  const inputTensor = new Tensor(inputData, [1, 300, 300, 3]);
+  const inputTensor = new Tensor(inputData, [1, 320, 320, 3]);
 
   setStatus('Running inference…');
   const startTime = performance.now();
@@ -432,8 +432,8 @@ async function init() {
   setProgress(30);
 
   // Step 2: Load model
-  setStatus('Loading SSD MobileNet V2 model (~5.9MB)…');
-  const MODEL_URL = 'https://raw.githubusercontent.com/google-coral/test_data/master/ssd_mobilenet_v2_coco_quant_postprocess.tflite';
+  setStatus('Loading EfficientDet Lite0 model (~4.3MB)…');
+  const MODEL_URL = 'https://raw.githubusercontent.com/google-coral/test_data/master/efficientdet_lite0_320_ptq.tflite';
 
   let model, backend;
   try {
